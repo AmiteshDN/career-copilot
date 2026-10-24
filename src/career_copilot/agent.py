@@ -13,13 +13,23 @@ def log_application(job_title: str, company: str, tool_context: ToolContext) -> 
     return {"status": "logged", "total_applications": len(applied)}
 
 
-root_agent = Agent(
-    model='gemini-flash-latest',
-    name='resume_tailor',
-    description="Tailors resumes and experience bullets to match target job descriptions text or fetched from URL",
+def check_for_fabrication(bullets:str, original_resume:str)->dict:
+    """Flags if tailored bullets mention metrics/tools not present in the original resume text."""
+    # naive check for the exercise — flag any new-looking numbers
+    import re
+    new_numbers = set(re.findall(r'\d+%|\$\d+', bullets)) - set(re.findall(r'\d+%|\$\d+', original_resume))
+    return {"has_unverified_numbers": bool(new_numbers), "flagged": list(new_numbers)}
+
+bullet_writer = Agent(
+    model='gemini-2.5-flash',
+    name='bullet_writer',
+    description="Writes tailored resume bullets based on job description and candidate's experience",
     instruction="""You are an expert Resume Strategist and Technical Recruiter specializing in tailoring resumes for competitive industry roles.
 
-Your task is to take the provided Job Description (JD) (as raw text or fetched from a URL) and the candidate's authentic work experience, then tailor and optimize the resume bullets.
+Your task is to take the provided Job Description (JD) and the candidate's authentic work experience, then tailor and optimize the resume bullets.
+###Fetching Job Description
+- If the user provides a URL, fetch the JD content from that URL using the `load_web_page` tool.
+- If the user provides raw text, use it directly as the JD content
 
 ### Application Workflow & State Management
 1. **Pre-Check Applied Jobs**: Before processing a new job posting or tailoring bullets, inspect `user:applied_jobs` in context.
@@ -51,6 +61,29 @@ Your task is to take the provided Job Description (JD) (as raw text or fetched f
 #### 5. Formatting & Length Constraints
 - Strict Limit: Exactly 4 bullet points per company/role in the experience section. Prioritize the 4 highest-impact, most relevant accomplishments for each role.
 - No Side Headings: Do not use inline sub-headers, bolded category prefixes, or label tags within experience entries (e.g., do NOT use "Key Responsibilities:", "Technologies Used:", "Projects:", or "Highlights:"). Provide a clean, direct list of bullet points under each position header.
+
+#### 6. Resume validation and fabrication check
+- Before presenting final bullets, call check_for_fabrication. If has_unverified_numbers is true, remove or rewrite those bullets without invented numbers.
+- If the job posting is from a staffing/recruiting agency (mentions 'on behalf of a client' or similar), say so clearly before the bullets.
 """,
-    tools=[load_web_page, log_application]
+    tools=[load_web_page, log_application, check_for_fabrication]
+)
+
+outreach_writer = Agent(
+    model='gemini-2.5-flash',
+    name='outreach_writer',
+    description="Drafts a short, casual networking or application outreach message.",
+      instruction=(
+        "Draft a brief, natural-sounding outreach message (not formal, no corporate "
+        "jargon) for reaching out about a job or networking contact. Keep it under 80 words."
+    ),
+)
+
+
+root_agent = Agent(
+    model='gemini-2.5-flash',
+    name='career_copilot',
+    description="Routes requests to the right career assistant.",
+    instruction="If the user wants resume bullets, hand off to bullet_writer. If they want an outreach or networking message, hand off to outreach_writer.",
+    sub_agents=[bullet_writer, outreach_writer],
 )
